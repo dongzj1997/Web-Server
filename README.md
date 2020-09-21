@@ -24,7 +24,7 @@ A simple and fast HTTP server implemented using C++17 and Boost.Asio.
 
 格式为：dd mmm yy hh:mm:ss zzz
 
-比如：20 SEP 2020 21:54:44 CST 
+比如：20 SEP 2020 21:54:44 CST
 
 ## 如何启动daytime服务
 
@@ -40,7 +40,7 @@ sudo apt install xinetd
 vim ./daytime
 
 # 重启该服务
-service xinetd restart 
+service xinetd restart
 ```
 
 效果如下图所示：
@@ -50,7 +50,6 @@ service xinetd restart
 ![img](./pic/daytime.jpg)
 
 ![img](./pic/restart.jpg)
-
 
 ## 用Asio编写一个synchronous 的 TCP daytime 客户端
 
@@ -132,4 +131,94 @@ int main(int argc, char* argv[])
 
 ## 用Asio编写一个synchronous 的 TCP daytime 服务器
 
-待续
+### 获取字符串格式的时间 & ctime的问题
+
+官方教程中给的例子在VS2019中编译不过，原因是一个与ctime有关的问题。
+
+```c++
+std::string make_daytime_string()
+{
+  using namespace std; // For time_t, time and ctime;
+  time_t now = time(0);
+  return ctime(&now);
+}
+```
+
+```log
+ C4996 'ctime': This function or variable may be unsafe. Consider using ctime_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS.
+```
+
+ctime 这个函数作用是传入一个`time_t`类型的参数，返回我们常用的字符串格式的时间。编译器提示这个函数是不安全的，不安全在哪呢？
+
+查找相关资料可以知道，该函数返回指向静态数据的指针，并且不是线程安全的。另外，它修改了可以与`gmtime`和`localtime`共享的静态tm对象。 `POSIX`将该功能标记为过时的，并建议使用`strftime`。
+
+并且对于某些time_t值，导致字符串长度超过25个字符（例如，年份10000），造成内存溢出。
+
+解决这个问题，有两种方法，第一种是定义一个宏，直接忽视这个错误
+
+```c++
+#define _CRT_SECURE_NO_WARNINGS
+```
+
+另一种是使用一些安全的函数，如`strftime`，`put_time`，`ctime_s`等等。
+
+这些函数一般要求我们自己提供一块内存作为参数。修改以后如下：
+
+```c++
+std::string make_daytime_string()
+{
+    char s[50] = {0};
+    using namespace std; // For time_t, time and ctime;
+    time_t now = time(0);
+    ctime_s(s, sizeof(s), &now);
+    // return ctime(&now);
+    return s;
+}
+```
+
+### synchronous 的 TCP daytime sever
+
+可以这也编写：注意synchronous表示服务器一直在等待客户端请求，如果没有请求，则一直阻塞。
+
+阻塞发生在`acceptor.accept(socket);`这一步。
+
+```c++
+int main()
+{
+    try
+    {
+        boost::asio::io_context io_context;
+
+        // 创建一个acceptor对象来侦听新的连接。它初始化为侦听TCP端口13（用于IP版本4）
+        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 13));
+
+        for (;;)
+        {
+            // 同步服务器，将一次处理一个连接。创建一个套接字，它将表示与客户端的连接，然后等待连接。
+            tcp::socket socket(io_context);
+
+            // 如果没有客户端创建socket，则程序一直阻塞在这一步等待
+            acceptor.accept(socket); // 阻塞的方式
+
+            std::string message = make_daytime_string();
+
+            boost::system::error_code ignored_error; // 如果正常的话 ignored_error 的值是 system:0
+            boost::asio::write(socket, boost::asio::buffer(message), ignored_error); 
+            // 运行到这里，出了代码块以后socket会销毁，连接关闭
+        }
+    }
+    catch (std::exception& e)
+    {
+        std::cerr << e.what() << std::endl;
+    }
+
+    return 0;
+}
+```
+
+运行效果如下：
+
+![img](./pic/result3.jpg)
+
+## 用 Asio 编写一个 asynchronous 的 TCP daytime 服务器
+
