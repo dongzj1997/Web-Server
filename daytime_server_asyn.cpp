@@ -20,8 +20,7 @@ std::string make_daytime_string()
 
 
 // 继承enable_shared_from_this和使用shared_ptr的作用是：只要有引用它的操作，我们就希望tcp_connection对象保持活动状态。
-class tcp_connection
-    : public boost::enable_shared_from_this<tcp_connection>
+class tcp_connection : public boost::enable_shared_from_this<tcp_connection>
 {
 public:
     typedef boost::shared_ptr<tcp_connection> pointer;
@@ -78,6 +77,7 @@ private:
     // 函数start_accept() 创建一个socket并启动异步接受操作以等待新的连接。
     void start_accept()
     {
+        // 一个新的new_connection 为即将到来的连接做准备
         tcp_connection::pointer new_connection = tcp_connection::create(io_context_);
         // handle_accept 为类成员函数，需要传入一个this指针当第一个参数
         acceptor_.async_accept(new_connection->socket(),
@@ -98,7 +98,7 @@ private:
         start_accept();
     }
 
-    boost::asio::io_context& io_context_;
+    boost::asio::io_context& io_context_; // io_context的引用
     tcp::acceptor acceptor_;
 };
 
