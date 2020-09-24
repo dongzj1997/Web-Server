@@ -1,0 +1,4 @@
+{
+	"port" : 8080,
+	"num_threads" : 1
+}
