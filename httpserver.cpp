@@ -51,8 +51,8 @@ HTTPServer::HTTPServer(boost::asio::io_context& io, unsigned short port = 80, si
         }
         catch (const std::exception& e) {
             std::stringstream content_stream;
-            std::cerr << ": " << e.what() << std::endl;
-            content_stream << "Could not open path " + request.path << std::endl;
+            std::cerr << ": " << request.path << std::endl;
+            content_stream << "Could not open path " << e.what() << std::endl;
             content_stream.seekp(0, ios::end);
 
             response << "HTTP/1.1 404 NOT FOUND\r\nContent-Length: " << content_stream.tellp() << "\r\n\r\n" << content_stream.rdbuf();
@@ -64,7 +64,7 @@ void HTTPServer::start() {
     accept();
 
     // 根据 num_threads 创建多个 run 线程
-    for(size_t c=1;c<num_threads_;c++) {
+    for(size_t c = 1;c < num_threads_; c++) {
         threads_.emplace_back([this](){
             io_.run();
         });

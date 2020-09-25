@@ -1,7 +1,5 @@
 #include "httpserver.hpp"
 
-#include <fstream> 
-#include <iostream> 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 
@@ -30,8 +28,8 @@ int main() {
 
     boost::asio::io_context io;
 
+    std::cout << "httpserver in port: " << port << std::endl;
     HTTPServer httpserver(io, port, num_threads);
-    
     httpserver.start();
     
     return 0;
