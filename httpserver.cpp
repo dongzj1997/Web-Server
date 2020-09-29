@@ -1,9 +1,10 @@
 #include "httpserver.hpp"
 
-HTTPServer::HTTPServer(boost::asio::io_context& io, unsigned short port = 80, size_t num_threads = 1) 
+HTTPServer::HTTPServer(boost::asio::io_context& io, unsigned short port , size_t num_threads, size_t request_timeout, size_t content_timeout)
     : io_(io), endpoint_(ip::tcp::v4(), port),
-    acceptor_(io_, endpoint_), num_threads_(num_threads) {
-
+    acceptor_(io_, endpoint_), num_threads_(num_threads),
+    request_timeout_(request_timeout), content_timeout_(content_timeout)
+    {
     // 定义请求的方式
 
     //直接访问Host,比如 127.0.0.1:8080 ,没有具体的路径,返回请求的详情.
@@ -89,6 +90,13 @@ void HTTPServer::accept() {
         accept();
 
         if(!ec) {
+            ip::tcp::no_delay option(true);
+            socket->set_option(option);
+
+#ifdef _DEBUG
+            std::cout << "socket accepted, ip : " << socket->remote_endpoint().address().to_string() << ", port : " << socket->remote_endpoint().port() << std::endl;
+#endif // _DEBUG
+
             process_request_and_respond(socket);
         }
     });
@@ -97,10 +105,21 @@ void HTTPServer::accept() {
 void HTTPServer::process_request_and_respond(shared_ptr<ip::tcp::socket> socket) {
     // 建立http连接以后 开始发送数据
     // 用 shared_ptr 来管理 read_buffer 对象
-    shared_ptr<boost::asio::streambuf> read_buffer(new boost::asio::streambuf);
+
+    shared_ptr<streambuf> read_buffer(new streambuf);
+    
+    // 已经接受到一个请求，等待请求发送后续数据，如果时间超过request_timeout_，则将socket关闭
+    shared_ptr<deadline_timer> timer;
+    if (request_timeout_ > 0) {
+        timer = set_socket_timeout(socket, request_timeout_);
+    }
 
     async_read_until(*socket, *read_buffer, "\r\n\r\n",               // bytes_transferred 是到指定定界符并包括指定定界符的字节数。
-    [this, socket, read_buffer](const boost::system::error_code& ec, size_t bytes_transferred) {
+    [this, socket, read_buffer, timer](const boost::system::error_code& ec, size_t bytes_transferred) {
+
+        if (request_timeout_ > 0) {
+            timer->cancel();
+        }
         if(!ec) {
             //read_buffer->size() 可能和 bytes_transferred 不同
             //执行async_read_until之后，streambuf 可能包含delimiter之外的其他数据”
@@ -117,10 +136,17 @@ void HTTPServer::process_request_and_respond(shared_ptr<ip::tcp::socket> socket)
             size_t num_additional_bytes = total - bytes_transferred;
 
             // 请求除了头之外, 还有Content 
-            if(request->header.count("Content-Length")>0) {
+            if(request->header.count("Content-Length") > 0) {
                 // transfer_exactly 显示的指定要 read 的字节数
+                shared_ptr<deadline_timer> timer;
+                if (content_timeout_ > 0) {
+                    timer = set_socket_timeout(socket, content_timeout_);
+                }
+
                 async_read(*socket, *read_buffer, transfer_exactly(stoull(request->header["Content-Length"]) - num_additional_bytes), 
-                [this, socket, read_buffer, request](const boost::system::error_code& ec, size_t bytes_transferred) {
+                [this, socket, read_buffer, request, timer](const boost::system::error_code& ec, size_t bytes_transferred) {
+                    if (content_timeout_ > 0)
+                        timer->cancel();
                     if(!ec) {
                         // Store pointer to read_buffer as istream object
                         // shared_ptr<istream> content;
@@ -130,12 +156,32 @@ void HTTPServer::process_request_and_respond(shared_ptr<ip::tcp::socket> socket)
                     }
                 });
             }
-            else {                   
+            else {                        
                 respond(socket, request);
             }
         }
     });
 }
+
+
+
+shared_ptr<deadline_timer> HTTPServer::set_socket_timeout(shared_ptr<ip::tcp::socket> socket, size_t time) {
+    std::shared_ptr<deadline_timer> timer(new deadline_timer(io_));
+    timer->expires_from_now(boost::posix_time::seconds(time));
+    timer->async_wait([socket](const boost::system::error_code& ec) {
+        if (!ec) {
+
+#ifdef _DEBUG
+            std::cout << "socket time_out, ip : "<< socket->remote_endpoint().address().to_string() << ", port : " << socket->remote_endpoint().port() <<std::endl;
+#endif // _DEBUG
+
+            socket->shutdown(ip::tcp::socket::shutdown_both);
+            socket->close();
+        }
+    });
+    return timer;
+}
+
 
 Request HTTPServer::parse_request(istream& stream) {
     Request request;
@@ -185,9 +231,18 @@ void HTTPServer::respond(shared_ptr<ip::tcp::socket> socket, shared_ptr<Request>
                 // 调用以后，response中已经填充好了要返回的信息
                 methods[request->method](response, *request, sm_res);
 
+                shared_ptr<deadline_timer> timer;
+                if (content_timeout_ > 0) {
+                    timer = set_socket_timeout(socket, content_timeout_);
+                }
+
                 //在lambda中捕获write_buffer，确保在async_write完成之前不会销毁它
-                async_write(*socket, *write_buffer, [this, socket, request, write_buffer](const boost::system::error_code& ec, size_t bytes_transferred) {
+                async_write(*socket, *write_buffer, [this, socket, request, write_buffer, timer](const boost::system::error_code& ec, size_t bytes_transferred) {
                     //如果时HTTP1.1或者以上的版本，使用持久连接，不立即销毁socket
+                    if (content_timeout_ > 0) {
+                        timer->cancel();
+                    }
+
                     if(!ec && stof(request->http_version) > 1.05)
                         // 使用 async_read_until 继续等待其他数据请求 
                         process_request_and_respond(socket);

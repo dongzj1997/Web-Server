@@ -33,7 +33,7 @@ class HTTPServer {
 public:
     unordered_map<string, unordered_map<string, function<void(ostream&, const Request&, const smatch&)>>> resources_;
     
-    HTTPServer(boost::asio::io_context&, unsigned short, size_t);
+    HTTPServer(boost::asio::io_context&, unsigned short, size_t, size_t, size_t);
     
     void start();
             
@@ -44,9 +44,14 @@ private:
     size_t num_threads_;
     std::vector<std::thread> threads_;
 
+    size_t request_timeout_ = 5;
+    size_t content_timeout_ = 300;
+
     void accept();
 
     void process_request_and_respond(shared_ptr<ip::tcp::socket> socket);
+
+    shared_ptr<deadline_timer> set_socket_timeout(shared_ptr<ip::tcp::socket> socket, size_t time);
     
     void respond(shared_ptr<ip::tcp::socket> socket, shared_ptr<Request> request);
 

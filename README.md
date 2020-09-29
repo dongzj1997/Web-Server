@@ -6,145 +6,89 @@ A simple and fast HTTP server implemented using C++17 and Boost.Asio.
 
 ---
 
-## HTTP 服务器 v0.4 改动说明
+## HTTP 服务器 v0.5 改动说明
 
-在[上一个版本中v0.3](https://github.com/dongzj1997/Web-Server/tree/v0.3)中，我们使用`HTTP`连接的类`HttpServer`，处理具体的HTTP请求和响应的类为`HttpConnection`，实现了一个简单的`HTTP`服务器。
+v0.5 功能更新 2020年9月29日
 
-但是功能还不是很完善，只能处理简单的请求和返回简单的文本，在这篇文章中，继续把缺少的补齐。
+1. 超时设置，建立的连接如果一段时间没新动作，则将该连接销毁。
+2. debug信息输出，利用VS中定义的 _DEBUG 宏，在DEBUG模式下会自动输出一些连接信息
+3. no dealy 选项，在默认的情况下,Nagle算法是默认开启的，比较适用于发送方发送大批量的小数据，这样可以降低包的传输个数。但是不适用于需要实时的单项的发送数据并及时获取响应的时候，需要将其关掉。
 
-主要有：
+## 连接超时自动销毁
 
-1. 程序启动的时候从配置文件中读取相应的参数，用到`boost/property_tree`中的`ptree`和`json_parser`这两个头文件。
+在v0.4版本中，有一个一个BUG，设置HTTP为持久连接的时候**没有设置到期时间**，每个连接的请求都不会销毁，一直在监听，在请求人数较多的时候容易将资源耗尽。
 
-2. 使用多线程来运行`io_.run();`
+其实解决办法很简单，在执行异步等待的前，比如执行`async_read_until`和`async_read`前设置一个计时器timer，timer和socket绑定，它的的回调函数写为将对应的socket关闭即可。
 
-3. 可以处理`GET`,`POST`等多种请求（使用了`unordered_map<string, function<void(ostream&, const Request&, const smatch&)>>`的数据结构）。
-
-4. 增加了对文件的请求（v0.3版本中只能返回字符串，不能返回文件）
-
-5. 增加了出错处理和提示，比如404等错误。
-
-6. 支持`HTTP1.1`或者以上的版本，使用持久连接，在发送完毕收据后不立即销毁socket，而是等待其他数据请求。
-
-7. 将头文件和源文件分开，结构更清晰，并且较前一版大量使用`lambda`表达式来替代`bind`对象作为回调函数，更直观。
-
----
-
-具体实现：
-
-## 从配置文件中读取相应的参数
-
-配置文件的格式为JSON，既方便人为的读取和修改，又方便程序处理。
-
-但是C++标准库中没有特别用于处理`JSON`格式的库，既然网络部分使用的是`Boost`，那么处理`JSON`也直接用`Boost`中的`property_tree`就行。
-
-`property_tree`中做`JSON`相关的处理主要用到`ptree`和`json_parser`这两个头文件。
-
-`ptree`主要是定义一个数据结构，类似于树的结构，可以理解为一个嵌套的字典。`pt.get<unsigned short>("port");` 表示将`pt`中的`port`键对应的值以`unsigned short`的方式读取并返回。
-
-`json_parser`主要的作用是将`JSON`文件按找一定的方式读取出来。`read_json(ss, pt);`表示将文件`ss`按照`JSON`格式读取到`pt`中去。
-
-使用十分方便。考虑到文件格式可能有误，使用 `try-catch`将解析`JSON`的过程包装起来。
+为了不同场合设置不同的时间，可以写一个函数：
 
 ```c++
-std::stringstream ss;
-ss << config.rdbuf();
-config.close();
-try {
-    boost::property_tree::ptree pt;
-    read_json(ss, pt);
-
-    port = pt.get<unsigned short>("port");
-    num_threads = pt.get<size_t>("num_threads");
-}
-catch (const std::exception& e) {
-    std::cerr << e.what() << std::endl;
+shared_ptr<deadline_timer> HTTPServer::set_socket_timeout(shared_ptr<ip::tcp::socket> socket, size_t time) {
+    std::shared_ptr<deadline_timer> timer(new deadline_timer(io_));
+    timer->expires_from_now(boost::posix_time::seconds(time));
+    timer->async_wait([socket](const boost::system::error_code& ec) {
+        if (!ec) {
+            socket->shutdown(ip::tcp::socket::shutdown_both);
+            socket->close();
+        }
+    });
+    return timer;
 }
 ```
 
-## 使用多线程来运行`io_.run();`
+该函数的第一个参数为要监视的socket，第二个参数为设置的超时时间。
 
-在类中定义一个数据结构`std::vector<std::thread> threads_;`
+在这个项目中，一共设置了两种超时情况，
 
-然后创建类的时候，使用多个线程来运行`io_.run();` **asio保证回调函数的执行一定是在调用run的线程中**
+第一种是`request_timeout_`，用于已经接受到一个建立请求，等待请求发送后续数据，如果时间超过`request_timeout_`，则将`socket`关闭，`request_timeout_`设置的时间为5秒。对于已经建立的请求，如果处理完毕后在`request_timeout_`时间后没有新的请求，则将该socket关闭。
 
-由于多个线程直线没有要共享且要修改的对象，所以暂时不用考虑加锁或者使用`strand`的问题。
+第二种是`content_timeout_`，用于传输`Content`的超时时间。考虑到网络情况比较复杂，且有些`Content`内容比较长，所以`content_timeout_`默认设置为300秒。
 
-实现方式很简单
+通过这两个超时时间基本解决了持久连接在请求人数较多的时候容易将资源耗尽的问题。
 
-```c++
-void HTTPServer::start() {
-    accept();
+根据实际情况可以设置为其他值，只需要修改配置文件即可。
 
-    // 根据 num_threads 创建多个 run 线程
-    for(size_t c = 1; c < num_threads_; c++) {
-        threads_.emplace_back([this](){
-            io_.run();
-        });
-    }
+## debug信息完善
 
-    io_.run();
+在`visual studio`中，如果是调试模式，则会定义一个宏`_DEBUG`，
 
-    // 启动其他线程
-    for(std::thread& t: threads_) {
-        t.join(); // -> io_.run();
-    }
-}
-```
-
-## 请求匹配操作
-
-在程序中，现阶段一共匹配两种请求，方法都为`GET`。
-
-第一种没有具体的路径,只有一个主机名+端口号，比如 127.0.0.1:8080，HTTP中的请求为`GET / HTTP/1.1`。
-
-第二种为对具体文件的请求,只有一个主机名+端口号+文件，比如 127.0.0.1:8080/test.html，HTTP中的请求为`GET /test.html HTTP/1.1`。
-
-使用正则表达式匹配。
-
-第一种只有一个`/`正则表达式为`""^/$""`，第二种为`"^/.+$"`表示以`/`开头，后面至少还有一个字符。
-
-将这些请求和对应的方法放入``unordered_map<string, function<void(ostream&, const Request&, const smatch&)>>``中（或者使用vector）
-
-在处理具体请求时，遍历容器，如果正则表达式匹配，则调用相应的函数（或者其他可调用对象）。
-
-> 可调用对象包括：函数，函数指针，lambda表达式，bind创建的对象，仿函数（重载了函数调用运算符的类）等待。
-
-## 对文件的请求和出错处理
-
-对文件的请求几乎是`HTTP`中最常用的操作了。
-
-这部分的逻辑比较简单，先判断文件路径是否合法，这里使用`std::distance`和`std::equal`两个函数，确保请求的文件在规定的目录下。
+所以我们可以将运行时要打印的信息放在这里。
 
 ```c++
-// 确保目录还在 web_root_path 下
-if (std::distance(web_root_path.begin(), web_root_path.end()) > std::distance(path.begin(), path.end()) ||
-    !std::equal(web_root_path.begin(), web_root_path.end(), path.begin()))
-    throw std::invalid_argument("path must be within root path");
+#ifdef _DEBUG
+            std::cout << "socket time_out, ip : "<< socket->remote_endpoint().address().to_string() << ", port : " << socket->remote_endpoint().port() <<std::endl;
+#endif // _DEBUG
 ```
 
-然后尝试打开文件，如果文件不存在，抛出一个错误。
+现阶段debug信息只有连接建立和连接销毁的信息（包括ip和端口号）
 
-将文件读到`std::stringstream`中，然后转移到`response`中，并返回。
+## no_dealy 选项
 
-如果文件不存在或者其他原因造成打开失败，则直接返回404和一个字符串。
+在介绍no_dealy 选项之前，先介绍一下Nagle算法。
 
-！ 注意这里都是一次读取，后续可以考虑换位**分多次读取并返回**。
+>在使用一些协议通讯的时候，比如Telnet，会有一个字节字节的发送的情景，每次发送一个字节的有用数据，就会产生41个字节长的分组，20个字节的IP Header 和 20个字节的TCP Header，这就导致了1个字节的有用信息要浪费掉40个字节的头部信息，这是一笔巨大的字节开销，而且这种Small packet在广域网上会增加拥塞的出现。
+>
+>如果解决这种问题？ Nagle就提出了一种通过减少需要通过网络发送包的数量来提高TCP/IP传输的效率，这就是Nagle算法
+>
+>Nagle算法的规则（可参考tcp_output.c文件里tcp_nagle_check函数注释）：  
+>（1）如果包长度达到MSS，则允许发送；  
+>（2）如果该包含有FIN，则允许发送；  
+>（3）设置了TCP_NODELAY选项，则允许发送；  
+>（4）未设置TCP_CORK选项时，若所有发出去的小数据包（包长度小于MSS）均被确认，则允许发送；  
+>（5）上述条件都未满足，但发生了超时（一般为200ms），则立即发送。  
 
-## 关于HTTP1.1
+Nagle算法主要是避免发送小的数据包，要求`TCP`连接上最多只能有一个**未被确认的小分组**，在该分组的确认到达之前不能发送其他的小分组。相反，`TCP`收集这些少量的小分组，并在确认到来时以一个分组的方式发出去。Nagle算法只允许一个未被ACK的包存在于网络，它并不管包的大小，因此它事实上就是一个扩展的停-等协议，只不过它是基于包停-等的，而不是基于字节停-等的。Nagle算法完全由TCP协议的ACK机制决定，这会带来一些问题，比如如果对端ACK回复很快的话，Nagle事实上不会拼接太多的数据包，虽然避免了网络拥塞，网络总体的利用率依然很低。
 
-> HTTP协议的初始版本中，每次进行一次通信都要断开一次TCP连接。但是由于传输信息量的增大(如一个页面里有多张图片请求)，每次请求都造成的无谓TCP连接建立和断开，增加了通信量的开销。
-> 因此，为解决上述TCP连接的问题，提出了持久连接（或HTTP keep-alive）方法。特点是只要任意一端没有明确提出断开连接，则保持TCP连接状态。
-> 持久连接的好处在于减少了 TCP 连接的重复建立和断开所造成的额外开销，减轻了服务器端的负载。另外，减少开销的那部分时间，使 HTTP 请求和响应能够更早地结束，这样 Web 页面的显示速度也就相应提高了。
-> 在 HTTP/1.1 中，所有的连接默认都是持久连接，但在 HTTP/1.0 内并未标准化。虽然有一部分服务器通过非标准的手段实现了持久连接，但服务器端不一定能够支持持久连接。毫无疑问，除了服务器端，客户端也需要支持持久连接
+在默认的情况下，`Nagle`算法是默认开启的，适用于发送方发送大批量的小数据，并且接收方作出及时回应的场合，这样可以降低包的传输个数。
 
-要将常规的连接换成持久连接十分简单，在之前的代码中，新建一个socket，在发送结束后，该socket对象会销毁。
+当你的应用不是连续请求+应答的模型的时候，而是需要实时的单项的发送数据并及时获取响应，这种情况就明显和Nagle算法的原理相悖，会产生不必要的延迟。
 
-在HTTP1.1中，发送完一批数据之后，不将socket销毁，而是调用`process_request_and_respond(socket);`函数，该函数又调用`async_read_until(*socket,...)`函数继续等待请求的输入。
+关闭`Nagle`算法很简单，在新建连接的时候用两行代码设置一下就行。
 
-通过这样即可保持连接。
-
-但是这里还有一个BUG，**没有设置到期时间**，每个连接的请求都不会销毁，一直在监听，在请求人数较多的时候容易将资源耗尽，这在未来的版本中会修正。
+```c++
+ip::tcp::no_delay option(true);
+socket->set_option(option);
+```
 
 ## 大致框架
 
@@ -152,33 +96,4 @@ if (std::distance(web_root_path.begin(), web_root_path.end()) > std::distance(pa
 
 ## 结果展示
 
-在exe的根目录下建一个web文件夹，里面放一个`test.html`写几行简单的HTML
-
-```html
-<html>
-    <head>
-        <title>Web-Server Test</title>
-    </head>
-    <body>
-        test 2333
-    </body>
-</html>
-```
-
-结果如下：
-
-![img](./pic/test1.jpg)
-
-请求不加其他路径，返回请求的详情：
-
-![img](./pic/test2.jpg)
-
-和浏览器中的信息对比
-
-![img](./pic/test3.jpg)
-
-最后，网页左上角的那个小图标是哪来的呢？
-
-其实通过调试发现，谷歌浏览器会自动请求一个`favicon.ico`文件作为网页的图标。
-
-所以新建一个`ico`文件放在资源的根目录下即可。
+![img](./pic/res2.jpg)

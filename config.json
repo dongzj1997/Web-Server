@@ -1,4 +1,6 @@
 {
 	"port" : 8080,
-	"num_threads" : 1
+	"num_threads" : 1,
+	"request_timeout" : 5, 
+	"content_timeout" : 300
 }
