@@ -4,6 +4,10 @@ A simple and fast HTTP server implemented using C++17 and Boost.Asio.
 
 从零开始实现一个基于 `C++17` 和 `Boost.Asio` 并且简单快速的HTTP服务器。
 
+大致框架：
+
+![img](./pic/flowdiag.jpg)
+
 ---
 
 ## HTTP 服务器 v1.0 改动说明
@@ -177,3 +181,82 @@ g++ main.cpp httpserver.cpp -o http -lboost_system -lboost_thread -lpthread -lbo
 最后，我们就可以使用配置好的端口在任意地方访问网站了。
 
 ![img](./pic/show.jpg)
+
+---
+
+## HTTP 服务器 v0.5 改动说明
+
+v0.5 功能更新 2020年9月29日
+
+详情点击[这里](https://github.com/dongzj1997/Web-Server/tree/v0.5)
+
+1. 超时设置，建立的连接如果一段时间没新动作，则将该连接销毁。
+2. debug信息输出，利用VS中定义的 _DEBUG 宏，在DEBUG模式下会自动输出一些连接信息
+3. no dealy 选项，在默认的情况下,Nagle算法是默认开启的，比较适用于发送方发送大批量的小数据，这样可以降低包的传输个数。但是不适用于需要实时的单项的发送数据并及时获取响应的时候，需要将其关掉。
+
+---
+
+## HTTP 服务器 v0.4 改动说明
+
+详情点击[这里](https://github.com/dongzj1997/Web-Server/tree/v0.4)
+
+在[上一个版本中v0.3](https://github.com/dongzj1997/Web-Server/tree/v0.3)中，我们使用`HTTP`连接的类`HttpServer`，处理具体的HTTP请求和响应的类为`HttpConnection`，实现了一个简单的`HTTP`服务器。
+
+但是功能还不是很完善，只能处理简单的请求和返回简单的文本，在这篇文章中，继续把缺少的补齐。
+
+主要有：
+
+1. 程序启动的时候从配置文件中读取相应的参数，用到`boost/property_tree`中的`ptree`和`json_parser`这两个头文件。
+
+2. 使用多线程来运行`io_.run();`
+
+3. 可以处理`GET`,`POST`等多种请求（使用了`unordered_map<string, function<void(ostream&, const Request&, const smatch&)>>`的数据结构）。
+
+4. 增加了对文件的请求（v0.3版本中只能返回字符串，不能返回文件）
+
+5. 增加了出错处理和提示，比如404等错误。
+
+6. 支持`HTTP1.1`或者以上的版本，使用持久连接，在发送完毕收据后不立即销毁socket，而是等待其他数据请求。
+
+7. 将头文件和源文件分开，结构更清晰，并且较前一版大量使用`lambda`表达式来替代`bind`对象作为回调函数，更直观。
+
+---
+
+## HTTP 服务器 v0.3 简单的HTTP服务器实现
+
+第一个可用版本，详情点击[这里](https://github.com/dongzj1997/Web-Server/tree/v0.3)
+
+1. 实现了`HttpServer`类，用于管理HTTP连接
+2. 实现了`HttpConnection`类，用于处理具体的HTTP请求和响应。
+3. 使用异步IO方式，全程使用**智能指针**管理该对象。
+
+---
+
+## HTTP 服务器 v0.2 Sockets 编程初步
+
+用一个使用asio开发的简单daytime客户端和服务器程序来让我们快速了解Sockets编程的相关知识和Asio中相关库的使用。详情点击[这里](https://github.com/dongzj1997/Web-Server/tree/v0.2)
+
+1. 介绍了什么是daytime服务，如何启动等等
+2. 用Asio编写一个synchronous 的 TCP daytime **客户端**，并测试
+3. 用Asio编写一个synchronous 的 TCP daytime **服务器**，并测试
+4. 用Asio编写一个asynchronous 的 TCP daytime **客户端**，并测试
+5. 用Asio编写一个asynchronous 的 TCP daytime **服务器**，并测试
+6. 使用UDP实现上面的内容。
+7. 总结**Asio**中常用的类于方法。
+
+---
+
+## HTTP 服务器 v0.1  Asio 快速入门
+
+自己总结的Asio快速入门教程，详情点击[这里](https://github.com/dongzj1997/Web-Server/tree/v0.1)
+
+主要有：
+
+1. 环境准备
+2. Boost.Asio 的安装、配置
+3. 简单的同步、异步语句
+4. 回调函数，bind等详细说明
+5. 多线程程序中同步处理程序（strand）
+6. Asio中用到的类介绍
+
+---
