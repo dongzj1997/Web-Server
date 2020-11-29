@@ -6,94 +6,174 @@ A simple and fast HTTP server implemented using C++17 and Boost.Asio.
 
 ---
 
-## HTTP 服务器 v0.5 改动说明
+## HTTP 服务器 v1.0 改动说明
 
-v0.5 功能更新 2020年9月29日
+v1.0 压力测试及部署到云 2020年11月29日
 
-1. 超时设置，建立的连接如果一段时间没新动作，则将该连接销毁。
-2. debug信息输出，利用VS中定义的 _DEBUG 宏，在DEBUG模式下会自动输出一些连接信息
-3. no dealy 选项，在默认的情况下,Nagle算法是默认开启的，比较适用于发送方发送大批量的小数据，这样可以降低包的传输个数。但是不适用于需要实时的单项的发送数据并及时获取响应的时候，需要将其关掉。
+1. 使用apache bench进行压力测试，实测在Intel 4.5GHz CPU单线程下每秒可处理1325个请求。
+2. 将服务器部署到阿里云（带宽仅为1Mbps，所以图片加载有点慢……）。
+3. 写了一个简单的个人空间网站放在了服务器上。
 
-## 连接超时自动销毁
+# 压力测试以及部署
 
-在v0.4版本中，有一个一个BUG，设置HTTP为持久连接的时候**没有设置到期时间**，每个连接的请求都不会销毁，一直在监听，在请求人数较多的时候容易将资源耗尽。
+做一些简单的压力测试，使用apache自带的压力测试工具apache bench即可，简称ab。
 
-其实解决办法很简单，在执行异步等待的前，比如执行`async_read_until`和`async_read`前设置一个计时器timer，timer和socket绑定，它的的回调函数写为将对应的socket关闭即可。
+## 基本概念
 
-为了不同场合设置不同的时间，可以写一个函数：
+先了解一些压力测试的基本概念
 
-```c++
-shared_ptr<deadline_timer> HTTPServer::set_socket_timeout(shared_ptr<ip::tcp::socket> socket, size_t time) {
-    std::shared_ptr<deadline_timer> timer(new deadline_timer(io_));
-    timer->expires_from_now(boost::posix_time::seconds(time));
-    timer->async_wait([socket](const boost::system::error_code& ec) {
-        if (!ec) {
-            socket->shutdown(ip::tcp::socket::shutdown_both);
-            socket->close();
-        }
-    });
-    return timer;
-}
+1. **吞吐率（Requests per second）**  
+概念：服务器并发处理能力的量化描述，单位是reqs/s，指的是某个并发用户数下单位时间内处理的请求数。某个并发用户数下单位时间内能处理的最大请求数，称之为最大吞吐率。
+计算公式：总请求数 / 处理完成这些请求数所花费的时间，即
+Request per second = Complete requests / Time taken for tests
+
+2. **服务器平均请求等待时间（Time per request: across all concurrent requests）**  
+计算公式：处理完成所有请求数所花费的时间 / 总请求数，即
+Time taken for / testsComplete requests  
+它是吞吐率的倒数。
+同时，它也=用户平均请求等待时间/并发用户数，即
+Time per request / Concurrency Level
+
+3. **并发连接数（The number of concurrent connections）**  
+某个时刻服务器所接受的请求数目。
+
+4. **并发用户数（The number of concurrent users，Concurrency Level）**  
+一个用户可能同时会产生多个会话，也即连接数。
+
+5. **用户平均请求等待时间（Time per request）**  
+即处理完成所有请求数所花费的时间/ （总请求数 / 并发用户数）  
+Time per request = Time taken for tests /（ Complete requests / Concurrency Level）
+
+## ab参数说明
+
+命令为`格式：ab [options] [http://]hostname[:port]/path`
+
+参数比较多，详细可以看[官方文档](https://httpd.apache.org/docs/2.4/programs/ab.html)
+
+比较常用的参数如下：
+
+- `-n` requests Number of requests to perform  
+在测试会话中所执行的请求个数（本次测试总共要访问页面的次数）。默认时，仅执行一个请求。
+- `-c` concurrency  
+Number of multiple requests to perform at a time. Default is one request at a time.
+
+- `-C` cookie-name=value  
+Add a Cookie: line to the request. The argument is typically in the form of a name=value pair. This field is repeatable.
+
+- `-s` timeout  
+Maximum number of seconds to wait before the socket times out. Default is 30 seconds. Available in 2.4.4 and later.
+
+一般情况下，使用`-n`和`-c`就可以了。
+
+## 测试结果
+
+在实验室的服务器上进行测试（Intel Xeon W系列，8C / 16T，3.9~4.5GHz ）
+
+只开单线程，请求数为5万，并发度为500，结果如下：
+
+![img](./pic/abres.jpg)
+
+可以看到，**单线程**下做到了**每秒处理1325个请求**，还是相当不错的。
+
+# 部署到阿里云
+
+开一个学生套餐10￥一月即可。
+
+通过ssh登录阿里云虚拟主机以后，我们还需要做以下工作。
+
+## GCC的升级
+
+在某些应用场景中，需要特定的gcc版本支持，但又不想编译gcc，可以使用红帽提供的开发工具包来管理gcc版本，这样做的好处是随时切换版本，并且可以并存多个版本，不破坏原有gcc环境。
+
+红帽官方Developer Toolset[文档地址](https://access.redhat.com/documentation/en-us/red_hat_developer_toolset/8/)
+
+先安装devtoolset包,然后安装对应版本的devtoolset
+
+```bash
+yum install centos-release-scl
+yum install devtoolset-4
 ```
 
-该函数的第一个参数为要监视的socket，第二个参数为设置的超时时间。
+其中devtoolset-4表示的是`gcc5.x.x版本`
 
-在这个项目中，一共设置了两种超时情况，
+其他版本对应如下：
 
-第一种是`request_timeout_`，用于已经接受到一个建立请求，等待请求发送后续数据，如果时间超过`request_timeout_`，则将`socket`关闭，`request_timeout_`设置的时间为5秒。对于已经建立的请求，如果处理完毕后在`request_timeout_`时间后没有新的请求，则将该socket关闭。
-
-第二种是`content_timeout_`，用于传输`Content`的超时时间。考虑到网络情况比较复杂，且有些`Content`内容比较长，所以`content_timeout_`默认设置为300秒。
-
-通过这两个超时时间基本解决了持久连接在请求人数较多的时候容易将资源耗尽的问题。
-
-根据实际情况可以设置为其他值，只需要修改配置文件即可。
-
-## debug信息完善
-
-在`visual studio`中，如果是调试模式，则会定义一个宏`_DEBUG`，
-
-所以我们可以将运行时要打印的信息放在这里。
-
-```c++
-#ifdef _DEBUG
-            std::cout << "socket time_out, ip : "<< socket->remote_endpoint().address().to_string() << ", port : " << socket->remote_endpoint().port() <<std::endl;
-#endif // _DEBUG
+```bash
+devtoolset-3对应gcc4.x.x版本
+devtoolset-4对应gcc5.x.x版本
+devtoolset-6对应gcc6.x.x版本
+devtoolset-7对应gcc7.x.x版本
 ```
 
-现阶段debug信息只有连接建立和连接销毁的信息（包括ip和端口号）
+激活gcc版本，使其生效
 
-## no_dealy 选项
+```bash
+scl enable devtoolset-4 bash
 
-在介绍no_dealy 选项之前，先介绍一下Nagle算法。
+or
 
->在使用一些协议通讯的时候，比如Telnet，会有一个字节字节的发送的情景，每次发送一个字节的有用数据，就会产生41个字节长的分组，20个字节的IP Header 和 20个字节的TCP Header，这就导致了1个字节的有用信息要浪费掉40个字节的头部信息，这是一笔巨大的字节开销，而且这种Small packet在广域网上会增加拥塞的出现。
->
->如果解决这种问题？ Nagle就提出了一种通过减少需要通过网络发送包的数量来提高TCP/IP传输的效率，这就是Nagle算法
->
->Nagle算法的规则（可参考tcp_output.c文件里tcp_nagle_check函数注释）：  
->（1）如果包长度达到MSS，则允许发送；  
->（2）如果该包含有FIN，则允许发送；  
->（3）设置了TCP_NODELAY选项，则允许发送；  
->（4）未设置TCP_CORK选项时，若所有发出去的小数据包（包长度小于MSS）均被确认，则允许发送；  
->（5）上述条件都未满足，但发生了超时（一般为200ms），则立即发送。  
-
-Nagle算法主要是避免发送小的数据包，要求`TCP`连接上最多只能有一个**未被确认的小分组**，在该分组的确认到达之前不能发送其他的小分组。相反，`TCP`收集这些少量的小分组，并在确认到来时以一个分组的方式发出去。Nagle算法只允许一个未被ACK的包存在于网络，它并不管包的大小，因此它事实上就是一个扩展的停-等协议，只不过它是基于包停-等的，而不是基于字节停-等的。Nagle算法完全由TCP协议的ACK机制决定，这会带来一些问题，比如如果对端ACK回复很快的话，Nagle事实上不会拼接太多的数据包，虽然避免了网络拥塞，网络总体的利用率依然很低。
-
-在默认的情况下，`Nagle`算法是默认开启的，适用于发送方发送大批量的小数据，并且接收方作出及时回应的场合，这样可以降低包的传输个数。
-
-当你的应用不是连续请求+应答的模型的时候，而是需要实时的单项的发送数据并及时获取响应，这种情况就明显和Nagle算法的原理相悖，会产生不必要的延迟。
-
-关闭`Nagle`算法很简单，在新建连接的时候用两行代码设置一下就行。
-
-```c++
-ip::tcp::no_delay option(true);
-socket->set_option(option);
+source /opt/rh/devtoolset-4/enable
 ```
 
-## 大致框架
+值得注意的是这仅仅在当前bash生效，如果需要永久生效，修改.bashrc 即可。
 
-![img](./pic/flowdiag.jpg)
+## 安装boost
 
-## 结果展示
+```bash
+tar -xzvf boost_1_74_0.tar.gz
+cd boost_1_74_0
+./bootstrap.sh --prefix=/usr/local
+./b2 install --with=all
+```
 
-![img](./pic/res2.jpg)
+## 编译websever
+
+```bash
+g++ main.cpp httpserver.cpp -o http -lboost_system -lboost_thread -lpthread -lboost_filesystem
+```
+
+## Linux中error while loading shared libraries错误解决办法
+
+默认情况下，编译器只会使用`/lib`和`/usr/lib`这两个目录下的库文件，通常通过源码包进行安装时，如果不指定`--prefix`，会将库安装在`/usr/local/lib`目录下；当运行程序需要链接动态库时，提示找不到相关的`.so`库，会报错。也就是说，`/usr/local/lib`目录不在系统默认的库搜索目录中，需要将目录加进去。
+
+1. 首先打开/etc/ld.so.conf文件
+
+2. 加入动态库文件所在的目录：执行vi /etc/ld.so.conf，在"include ld.so.conf.d/*.conf"下方增加"/usr/local/lib"。
+
+3. 保存后，在命令行终端执行：/sbin/ldconfig -v；其作用是将文件/etc/ld.so.conf列出的路径下的库文件缓存到/etc/ld.so.cache以供使用，因此当安装完一些库文件，或者修改/etc/ld.so.conf增加了库的新搜索路径，需要运行一下ldconfig，使所有的库文件都被缓存到文件/etc/ld.so.cache中，如果没做，可能会找不到刚安装的库。
+
+　　经过以上三个步骤，"error while loading shared libraries"的问题通常情况下就可以解决了。
+
+　　如果运行应用程序时，还是提示以上错误，那就得确认一下是不是当前用户在库目录下是不是没有可读的权限。像我遇到的问题就是，从别的机子拷贝了一些`.so`动态库，然后用root权限放到了`/usr/local/lib`中（普通用户没有对该目录的写权限），然后切换用户运行程序时，始终提示找不到.so库，一直以为是我配置有问题，结果是因为权限原因，那些我用root权限增加到`/usr/local/lib`中的`.so`文件对于普通用户而言，是没有访问权限的，所以以普通用户运行程序，当需要链接`.so`库时，在`/usr/local/lib`中是查找不到的。
+
+　　其实，对于由普通用户自己编译生成的`.so`库文件，比较好的做法是将这些`.so`库文件的路径用`export`指令加入到`~/.bash_profile`中的`LD_LIBRARY_PATH`变量中,`LD_LIBRARY_PATH`是程序运行需要链接`.so`库时会去查找的一个目录，`~/.bash_profile`是登陆或打开shell时会读取的文件，这样，每次用户登录时，都会把这些`.so`库文件的路径写入`LD_LIBRARY_PATH`，这样就可以正常地使用这些`.so`库文件了。
+
+## 运行
+
+编译好后，添加对应的动态库位置，即可运行。
+
+但是对于阿里云ECS，并不是所有端口都可以使用，需要在阿里云管理后台配置安全组规则。
+
+![img](./pic/rule.jpg)
+
+可以看到，阿里默认开放的端口号是3389，我们将服务器的conf.json文件中端口号的参数同样修改为3389即可。
+
+如果想要用其他的端口，修改阿里云管理后台配置安全组规则就行。
+
+比如我们将8080端口加入到规则中，除此之外，可能要需要修改一下防火墙配置
+
+在centos 7 中 防火墙iptables已经由firewalld来管理，所以需要将8080端口添加到防火墙开放端口
+
+> firewall-cmd --zone=public --add-port=8080/tcp --permanent
+
+添加完端口之后，需要重启下防火墙
+
+> systemctl restart firewalld.service
+
+查看端口是否添加到防火墙开放端口
+
+> firewall-cmd --query-port=8080/tcp
+
+最后，我们就可以使用配置好的端口在任意地方访问网站了。
+
+![img](./pic/show.jpg)
